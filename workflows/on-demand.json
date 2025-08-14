@@ -1,0 +1,284 @@
+{
+  "name": "On-Demand Etymology Video -> YouTube",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "create-video",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const runId = new Date().toISOString().replace(/[:.]/g,'-'); const term = ($json.term || 'serendipity').toLowerCase().trim(); return [{ json: { runId, outDir: `/workspace/runs/${runId}`, voice: 'en_US-lessac-medium.onnx', term } }];"
+      },
+      "name": "Init Context",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [460, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://en.wiktionary.org/w/api.php",
+        "responseFormat": "json",
+        "queryParameters": {
+          "parameter": [
+            { "name": "action", "value": "parse" },
+            { "name": "page", "value": "={{$json.term}}" },
+            { "name": "prop", "value": "wikitext|sections" },
+            { "name": "format", "value": "json" },
+            { "name": "redirects", "value": "1" }
+          ]
+        },
+        "options": { "retryOnFail": true, "maxRetries": 3, "timeout": 30000 }
+      },
+      "name": "Wiktionary Parse",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [700, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const data = $items(\\\"Wiktionary Parse\\\", 0, 0)[0]?.json || {}; const wikitext = String(data?.parse?.wikitext?.['*'] || ''); const lower = wikitext.toLowerCase(); let start = lower.indexOf('== etymology'); if (start < 0) start = lower.indexOf('==etymology'); let end = start >= 0 ? wikitext.indexOf('\\n==', start + 2) : -1; let section = (start >= 0) ? wikitext.slice(start, end > 0 ? end : undefined) : wikitext; section = section.replace(/\\{\\{[^}]*\\}\\}/g, ' ').replace(/\\[\\[([^\\]|]+\\|)?([^\\]]+)\\]\\]/g, '$2').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim(); const term = ($items(\\\"Init Context\\\", 0, 0)[0]?.json?.term) || ''; return [{ json: { term, etymology: section.slice(0, 4000) } }];"
+      },
+      "name": "Extract Etymology",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [940, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const term = $json.term; const ety = ($json.etymology||'').trim(); const intro = `Tonight, we gently explore the origin of the word \\\"${term}\\\". Settle in, slow your breath, and let the story carry you.`; const body = ety ? `Etymology. ${ety}` : `This term is popular in modern usage. While detailed etymology was unavailable, we can reflect on how language evolves—through people, places, and playful use. The sound of the word itself can invite rest.`; const outro = `Thank you for listening. Allow the soft rhythm of language to guide you into deep, restful sleep.`; const script = [intro, body, outro].join(' '); return [{ json: { ...$json, script } }];"
+      },
+      "name": "Compose Script",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [1180, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://piper:8080/api/tts",
+        "responseFormat": "file",
+        "jsonParameters": true,
+        "options": { "retryOnFail": true, "maxRetries": 3, "timeout": 600000, "bodyContentType": "json" },
+        "bodyParametersJson": "={{ JSON.stringify({ text: $node['Compose Script'].json.script, voice: $node['Init Context'].json.voice }) }}"
+      },
+      "name": "TTS Piper",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1420, 200]
+    },
+    {
+      "parameters": {
+        "fileName": "={{$node['Init Context'].json.outDir}}/audio.wav",
+        "useBinaryData": true,
+        "binaryPropertyName": "data"
+      },
+      "name": "Save Audio",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "typeVersion": 1,
+      "position": [1660, 200]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"mkdir -p '{{$node[\\\"Init Context\\\"].json.outDir}}' && ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 '{{$node[\\\"Init Context\\\"].json.outDir}}/audio.wav'\""
+      },
+      "name": "Probe Duration",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 2,
+      "position": [1900, 200]
+    },
+    {
+      "parameters": {
+        "functionCode": "const durItem = $items(\\\"Probe Duration\\\", 0, 0)[0]; const seconds = parseFloat(durItem?.json?.stdout || '0') || 60; const scriptItem = $items(\\\"Compose Script\\\", 0, 0)[0]; const text = String(scriptItem?.json?.script || '').replace(/\\s+/g,' ').trim(); const parts = text.split(/(?<=[.!?])\\s+/).filter(Boolean); const weights = parts.map(p=>Math.max(1, p.length)); const total = weights.reduce((a,b)=>a+b,0) || 1; let t=0; let idx=1; const srt=[]; function fmt(s){const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(sec.toFixed(3)).padStart(6,'0').replace('.',',')}`} for (let i=0;i<parts.length;i++){ const p=parts[i]; const dur = seconds * (weights[i]/total); const start=t; const end=t+dur; t=end; srt.push(`${idx++}\\n${fmt(start)} --> ${fmt(end)}\\n${p}\\n`); } const content = srt.join('\\n'); const b64 = Buffer.from(content, 'utf8').toString('base64'); return [{ json: { srt_b64: b64 } }];"
+      },
+      "name": "Build SRT",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 2,
+      "position": [2140, 200]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"python3 - << 'PY'\\nimport base64,sys,os\\nfrom pathlib import Path\\nout=os.environ.get('OUTDIR')\\nPath(out).mkdir(parents=True, exist_ok=True)\\nopen(f'{out}/captions.srt','wb').write(base64.b64decode(os.environ['SRT']))\\nprint('OK')\\nPY\"",
+        "options": {
+          "shell": "bash",
+          "environment": {
+            "environmentVariables": [
+              { "name": "SRT", "value": "={{$json.srt_b64}}" },
+              { "name": "OUTDIR", "value": "={{$node['Init Context'].json.outDir}}" }
+            ]
+          }
+        }
+      },
+      "name": "Write SRT",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 2,
+      "position": [2380, 200]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"set -e; DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \\\"$OUTDIR/audio.wav\\\"); ffmpeg -y -f lavfi -i color=c=0x0f111a:s=1280x720:d=$DURATION -filter_complex \\\"[0]format=yuv420p,drawbox=x=50:y=50:w=1180:h=620:color=white@0.02:t=fill, vignette=PI/4:0.5, drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='$TERM':fontcolor=white:fontsize=72:x=(w-text_w)/2:y=80:alpha='if(lt(t,2),t/2,1)', subtitles='$OUTDIR/captions.srt':force_style='FontName=DejaVu Sans,FontSize=28,PrimaryColour=&HDDFFFFFF,OutlineColour=&H40000000,BorderStyle=3,Outline=1,Shadow=0'\\\" -i \\\"$OUTDIR/audio.wav\\\" -shortest -c:v libx264 -crf 18 -preset veryslow -pix_fmt yuv420p -c:a aac -b:a 128k \\\"$OUTDIR/output.mp4\\\"\"",
+        "options": {
+          "shell": "bash",
+          "environment": {
+            "environmentVariables": [
+              { "name": "OUTDIR", "value": "={{$node['Init Context'].json.outDir}}" },
+              { "name": "TERM", "value": "={{$node['Init Context'].json.term}}" }
+            ]
+          }
+        }
+      },
+      "name": "Render Video",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 2,
+      "position": [2620, 200]
+    },
+    {
+      "parameters": {
+        "command": "bash -lc \"ffmpeg -y -f lavfi -i color=c=0x0f111a:s=1280x720 -frames:v 1 -vf \\\"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='{{$node[\\\"Init Context\\\"].json.term}}':fontcolor=white:fontsize=120:x=(w-text_w)/2:y=(h-text_h)/2\\\" '{{$node[\\\"Init Context\\\"].json.outDir}}/thumb.png'\""
+      },
+      "name": "Make Thumbnail",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 2,
+      "position": [2860, 200]
+    },
+    {
+      "parameters": {
+        "filePath": "={{$node['Init Context'].json.outDir}}/output.mp4",
+        "binaryPropertyName": "video"
+      },
+      "name": "Load Video File",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [3100, 200]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos",
+        "options": {
+          "qs": {
+            "part": "snippet,status"
+          },
+          "headers": {
+            "Content-Type": "application/octet-stream",
+            "X-Upload-Content-Type": "video/*",
+            "X-Upload-Content-Length": "={{$node['Load Video File'].binary.data_1.length}}"
+          },
+          "body": {
+            "snippet": {
+              "title": "Etymology of {{$node['Init Context'].json.term}}",
+              "description": "An exploration of the word '{{$node['Init Context'].json.term}}' and its origins.",
+              "tags": ["etymology", "language", "word origins"],
+              "categoryId": "22"
+            },
+            "status": {
+              "privacyStatus": "private",
+              "selfDeclaredMadeForKids": false
+            }
+          },
+          "json": true
+        }
+      },
+      "name": "YouTube Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "credentials": {
+        "httpOAuth2Api": {
+          "id": "1",
+          "name": "YouTube OAuth2 API"
+        }
+      },
+      "position": [3340, 200]
+    },
+    {
+      "parameters": {
+        "filePath": "={{$node['Init Context'].json.outDir}}/thumb.png",
+        "binaryPropertyName": "thumb"
+      },
+      "name": "Load Thumb",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "typeVersion": 1,
+      "position": [3340, 360]
+    },
+    {
+      "parameters": {
+        "url": "https://www.googleapis.com/upload/youtube/v3/thumbnails/set",
+        "options": {
+          "method": "POST",
+          "qs": { "videoId": "={{$node['YouTube Upload'].json.id}}" },
+          "headers": { "Content-Type": "multipart/form-data" },
+          "formData": {
+            "media": {
+              "value": "={{$node['Load Thumb'].binary.data_1}}",
+              "options": {
+                "filename": "thumbnail.jpg",
+                "contentType": "image/jpeg"
+              }
+            }
+          },
+          "json": true
+        },
+        "authentication": "oAuth2"
+      },
+      "name": "Set Thumbnail",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "credentials": {
+        "httpOAuth2Api": {
+          "id": "1",
+          "name": "YouTube OAuth2 API"
+        }
+      },
+      "position": [3600, 200]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": "200",
+          "responseBody": "={{ { success: true, videoId: $node['YouTube Upload'].json.id, term: $node['Init Context'].json.term, runId: $node['Init Context'].json.runId } }}",
+          "responseHeaders": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        }
+      },
+      "name": "Return Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [3860, 200]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Init Context", "type": "main", "index": 0 }]] },
+    "Init Context": { "main": [[{ "node": "Wiktionary Parse", "type": "main", "index": 0 }]] },
+    "Wiktionary Parse": { "main": [[{ "node": "Extract Etymology", "type": "main", "index": 0 }]] },
+    "Extract Etymology": { "main": [[{ "node": "Compose Script", "type": "main", "index": 0 }]] },
+    "Compose Script": { "main": [[{ "node": "Probe Duration", "type": "main", "index": 0 }]] },
+    "Probe Duration": { "main": [[{ "node": "Build SRT", "type": "main", "index": 0 }]] },
+    "Build SRT": { "main": [[{ "node": "Save SRT", "type": "main", "index": 0 }]] },
+    "Save SRT": { "main": [[{ "node": "Generate TTS", "type": "main", "index": 0 }]] },
+    "Generate TTS": { "main": [[{ "node": "Generate Thumbnail", "type": "main", "index": 0 }]] },
+    "Generate Thumbnail": { "main": [[{ "node": "Render Video", "type": "main", "index": 0 }]] },
+    "Render Video": { "main": [[{ "node": "Load Video File", "type": "main", "index": 0 }]] },
+    "Load Video File": { 
+      "main": [
+        [
+          { "node": "YouTube Upload", "type": "main", "index": 0 },
+          { "node": "Load Thumb", "type": "main", "index": 0 }
+        ]
+      ] 
+    },
+    "Load Thumb": { "main": [[{ "node": "Set Thumbnail", "type": "main", "index": 0 }]] },
+    "YouTube Upload": { "main": [[{ "node": "Set Thumbnail", "type": "main", "index": 0 }]] },
+    "Set Thumbnail": { "main": [[{ "node": "Return Response", "type": "main", "index": 0 }]] },
+    "Return Response": { "main": [] }
+  },
+  "active": false
+}

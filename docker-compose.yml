@@ -1,0 +1,51 @@
+version: "3.8"
+
+services:
+  n8n:
+    build:
+      context: .
+      dockerfile: ./Dockerfile.n8n
+    container_name: n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PROTOCOL=http
+      - N8N_PORT=5678
+      - N8N_ENCRYPTION_KEY=JmJrOqvR9XQ2oY3c7Uq1t8mF5sP4wD2r
+      - N8N_SECURE_COOKIE=false
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin@example.com
+      - N8N_BASIC_AUTH_PASSWORD=Youtubevid@2025
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_COMMUNITY_PACKAGES_INCLUDE=@n8n/n8n-nodes-langchain,@n8n/n8n-nodes-langchain-rag,@n8n/n8n-nodes-youtube,@n8n/n8n-nodes-ffmpeg
+      - N8N_METRICS=false
+      - TZ=Etc/UTC
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      - N8N_COMMUNITY_PACKAGES=n8n-nodes-userless-reddit@0.5.0
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+      - ./workspace:/workspace
+    restart: unless-stopped
+    depends_on:
+      - piper
+
+  piper:
+    image: ghcr.io/arunk140/serve-piper-tts:latest
+    container_name: piper
+    platform: linux/amd64  # Force use of amd64 image for compatibility
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./piper_data:/app/piper/voices  # Updated path to match container's expected location
+    environment:
+      - PIPER_VOICES_DIR=/app/piper/voices
+    restart: unless-stopped
+
+# Optional: auto-update images
+#  watchtower:
+#    image: containrrr/watchtower
+#    volumes:
+#      - /var/run/docker.sock:/var/run/docker.sock
+#    command: --cleanup --schedule '0 0 3 * * *'
+#    restart: unless-stopped

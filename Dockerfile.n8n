@@ -1,0 +1,15 @@
+# Dockerfile.n8n
+FROM n8nio/n8n:latest
+
+USER root
+RUN apk update && \
+    apk add --no-cache ffmpeg fontconfig ttf-dejavu jq python3 py3-pip && \
+    rm -rf /var/cache/apk/*
+
+# Build font cache
+RUN fc-cache -f -v
+
+# Install YouTube node
+RUN npm install -g n8n-nodes-youtube
+
+USER node
